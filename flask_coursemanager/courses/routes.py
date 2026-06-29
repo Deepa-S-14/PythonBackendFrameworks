@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request
+from courses.models import Course, db
 
 courses_bp = Blueprint(
     "courses",
@@ -19,7 +20,9 @@ def make_response_json(data, status_code=200):
 
 @courses_bp.route("/", methods=["GET"])
 def get_courses():
-    return make_response_json(courses)
+    courses = Course.query.all()
+    data = [course.to_dict() for course in courses]
+    return make_response_json(data)
 @courses_bp.route("/<int:course_id>", methods=["GET"])
 def get_course(course_id):
     for course in courses:
