@@ -1,15 +1,38 @@
-from fastapi import FastAPI, Depends, HTTPException, Response, status
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    Response,
+    status
+)
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
 from schemas import CourseCreate, CourseUpdate
 from database import get_db
+from auth import (
+    hash_password,
+    verify_password,
+    create_access_token
+)
 
 app = FastAPI(
     title="Course Manager API",
-    description="RESTful API following best practices",
-    version="2.0.0",
+    description="RESTful API with Authentication",
+    version="3.0.0"
 )
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 courses = []
 next_id = 1
+
+# Demo user
+users = {
+    "admin": {
+        "username": "admin",
+        "hashed_password": hash_password("admin123")
+    }
+}
 
 
 def error_response(code: str, message: str, field=None):
@@ -22,83 +45,57 @@ def error_response(code: str, message: str, field=None):
     }
 
 
-@app.get("/", tags=["Home"])
+@app.get("/")
 async def root():
-    return {"message": "Welcome to Course Manager API v1"}
+    return {"message": "Welcome to Secure Course Manager API"}
 
 
-# URL Versioning: /api/v1/
-# Another common approach is header-based versioning
-# (Accept: application/vnd.api+json;version=1)
+@app.post("/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
+    user = users.get(form_data.username)
 
-@app.get("/api/v1/courses", tags=["Courses"])
-async def get_courses(
-    page: int = 1,
-    page_size: int = 10,
-    search: str = "",
-    db=Depends(get_db)
-):
-    filtered = courses
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
 
-    if search:
-        filtered = [
-            c for c in courses
-            if search.lower() in c["name"].lower()
-            or search.lower() in c["code"].lower()
-        ]
+    if not verify_password(
+        form_data.password,
+        user["hashed_password"]
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
 
-    total = len(filtered)
-
-    start = (page - 1) * page_size
-    end = start + page_size
-
-    results = filtered[start:end]
-
-    next_page = (
-        f"/api/v1/courses?page={page+1}&page_size={page_size}"
-        if end < total else None
-    )
-
-    previous_page = (
-        f"/api/v1/courses?page={page-1}&page_size={page_size}"
-        if page > 1 else None
+    access_token = create_access_token(
+        data={"sub": user["username"]}
     )
 
     return {
-        "count": total,
-        "next": next_page,
-        "previous": previous_page,
-        "results": results
+        "access_token": access_token,
+        "token_type": "bearer"
     }
 
 
-@app.get("/api/v1/courses/{course_id}", tags=["Courses"])
-async def get_course(course_id: int):
-
-    for course in courses:
-        if course["id"] == course_id:
-            return course
-
-    raise HTTPException(
-        status_code=404,
-        detail=error_response(
-            "NOT_FOUND",
-            f"Course with id {course_id} does not exist"
-        )
-    )
+@app.get("/protected")
+async def protected_route(token: str = Depends(oauth2_scheme)):
+    return {
+        "message": "Access Granted",
+        "token": token
+    }
 
 
-@app.post(
-    "/api/v1/courses",
-    tags=["Courses"],
-    status_code=status.HTTP_201_CREATED,
-    summary="Create Course",
-    response_description="Created Course"
-)
+@app.get("/api/v1/courses")
+async def get_courses(db=Depends(get_db)):
+    return courses
+
+
+@app.post("/api/v1/courses")
 async def create_course(
     course: CourseCreate,
-    response: Response,
     db=Depends(get_db)
 ):
     global next_id
@@ -111,37 +108,28 @@ async def create_course(
     }
 
     courses.append(new_course)
-
-    response.headers["Location"] = f"/api/v1/courses/{next_id}"
-
     next_id += 1
 
     return new_course
 
 
-@app.put("/api/v1/courses/{course_id}", tags=["Courses"])
+@app.put("/api/v1/courses/{course_id}")
 async def update_course(
     course_id: int,
-    updated_course: CourseCreate,
+    updated: CourseCreate,
     db=Depends(get_db)
 ):
     for course in courses:
         if course["id"] == course_id:
-            course["name"] = updated_course.name
-            course["code"] = updated_course.code
-            course["credits"] = updated_course.credits
+            course["name"] = updated.name
+            course["code"] = updated.code
+            course["credits"] = updated.credits
             return course
 
-    raise HTTPException(
-        status_code=404,
-        detail=error_response(
-            "NOT_FOUND",
-            f"Course with id {course_id} does not exist"
-        )
-    )
+    raise HTTPException(status_code=404, detail="Course not found")
 
 
-@app.patch("/api/v1/courses/{course_id}", tags=["Courses"])
+@app.patch("/api/v1/courses/{course_id}")
 async def patch_course(
     course_id: int,
     updated: CourseUpdate,
@@ -161,20 +149,10 @@ async def patch_course(
 
             return course
 
-    raise HTTPException(
-        status_code=404,
-        detail=error_response(
-            "NOT_FOUND",
-            f"Course with id {course_id} does not exist"
-        )
-    )
+    raise HTTPException(status_code=404, detail="Course not found")
 
 
-@app.delete(
-    "/api/v1/courses/{course_id}",
-    tags=["Courses"],
-    status_code=status.HTTP_204_NO_CONTENT
-)
+@app.delete("/api/v1/courses/{course_id}")
 async def delete_course(
     course_id: int,
     db=Depends(get_db)
@@ -182,12 +160,8 @@ async def delete_course(
     for course in courses:
         if course["id"] == course_id:
             courses.remove(course)
-            return
+            return {
+                "message": "Course deleted successfully"
+            }
 
-    raise HTTPException(
-        status_code=404,
-        detail=error_response(
-            "NOT_FOUND",
-            f"Course with id {course_id} does not exist"
-        )
-    )
+    raise HTTPException(status_code=404, detail="Course not found")
