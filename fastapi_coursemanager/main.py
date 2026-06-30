@@ -1,53 +1,106 @@
-from fastapi import FastAPI, Depends
-from schemas import CourseCreate
+from fastapi import FastAPI, Depends, HTTPException, Response, status
+from schemas import CourseCreate, CourseUpdate
 from database import get_db
 
 app = FastAPI(
     title="Course Manager API",
-    description="FastAPI CRUD API with Dependency Injection",
-    version="1.0.0"
+    description="RESTful API following best practices",
+    version="2.0.0",
 )
 
 courses = []
 next_id = 1
 
 
-@app.get("/", tags=["Home"], summary="Welcome Endpoint")
-async def root():
-    return {"message": "Welcome to Course Manager API"}
-
-
-@app.get(
-    "/courses",
-    tags=["Courses"],
-    summary="Get all courses",
-    description="Returns a list of all available courses."
-)
-async def get_courses(db=Depends(get_db)):
+def error_response(code: str, message: str, field=None):
     return {
-        "message": "All courses",
-        "data": courses
+        "error": {
+            "code": code,
+            "message": message,
+            "field": field
+        }
     }
 
 
-@app.get(
-    "/courses/{course_id}",
-    tags=["Courses"],
-    summary="Get course by ID"
-)
+@app.get("/", tags=["Home"])
+async def root():
+    return {"message": "Welcome to Course Manager API v1"}
+
+
+# URL Versioning: /api/v1/
+# Another common approach is header-based versioning
+# (Accept: application/vnd.api+json;version=1)
+
+
+@app.get("/api/v1/courses", tags=["Courses"])
+async def get_courses(
+    page: int = 1,
+    page_size: int = 10,
+    search: str = "",
+    db=Depends(get_db)
+):
+    filtered = courses
+
+    if search:
+        filtered = [
+            c for c in courses
+            if search.lower() in c["name"].lower()
+            or search.lower() in c["code"].lower()
+        ]
+
+    total = len(filtered)
+
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    results = filtered[start:end]
+
+    next_page = (
+        f"/api/v1/courses?page={page+1}&page_size={page_size}"
+        if end < total else None
+    )
+
+    previous_page = (
+        f"/api/v1/courses?page={page-1}&page_size={page_size}"
+        if page > 1 else None
+    )
+
+    return {
+        "count": total,
+        "next": next_page,
+        "previous": previous_page,
+        "results": results
+    }
+
+
+@app.get("/api/v1/courses/{course_id}", tags=["Courses"])
 async def get_course(course_id: int):
+
     for course in courses:
         if course["id"] == course_id:
             return course
-    return {"error": "Course not found"}
+
+    raise HTTPException(
+        status_code=404,
+        detail=error_response(
+            "NOT_FOUND",
+            f"Course with id {course_id} does not exist"
+        )
+    )
 
 
 @app.post(
-    "/courses",
+    "/api/v1/courses",
     tags=["Courses"],
-    summary="Create a new course"
+    status_code=status.HTTP_201_CREATED,
+    summary="Create Course",
+    response_description="Created Course"
 )
-async def create_course(course: CourseCreate, db=Depends(get_db)):
+async def create_course(
+    course: CourseCreate,
+    response: Response,
+    db=Depends(get_db)
+):
     global next_id
 
     new_course = {
@@ -58,19 +111,15 @@ async def create_course(course: CourseCreate, db=Depends(get_db)):
     }
 
     courses.append(new_course)
+
+    response.headers["Location"] = f"/api/v1/courses/{next_id}"
+
     next_id += 1
 
-    return {
-        "message": "Course created successfully",
-        "course": new_course
-    }
+    return new_course
 
 
-@app.put(
-    "/courses/{course_id}",
-    tags=["Courses"],
-    summary="Update an existing course"
-)
+@app.put("/api/v1/courses/{course_id}", tags=["Courses"])
 async def update_course(
     course_id: int,
     updated_course: CourseCreate,
@@ -81,24 +130,64 @@ async def update_course(
             course["name"] = updated_course.name
             course["code"] = updated_course.code
             course["credits"] = updated_course.credits
+            return course
 
-            return {
-                "message": "Course updated successfully",
-                "course": course
-            }
+    raise HTTPException(
+        status_code=404,
+        detail=error_response(
+            "NOT_FOUND",
+            f"Course with id {course_id} does not exist"
+        )
+    )
 
-    return {"error": "Course not found"}
+
+@app.patch("/api/v1/courses/{course_id}", tags=["Courses"])
+async def patch_course(
+    course_id: int,
+    updated: CourseUpdate,
+    db=Depends(get_db)
+):
+    for course in courses:
+        if course["id"] == course_id:
+
+            if updated.name is not None:
+                course["name"] = updated.name
+
+            if updated.code is not None:
+                course["code"] = updated.code
+
+            if updated.credits is not None:
+                course["credits"] = updated.credits
+
+            return course
+
+    raise HTTPException(
+        status_code=404,
+        detail=error_response(
+            "NOT_FOUND",
+            f"Course with id {course_id} does not exist"
+        )
+    )
 
 
 @app.delete(
-    "/courses/{course_id}",
+    "/api/v1/courses/{course_id}",
     tags=["Courses"],
-    summary="Delete a course"
+    status_code=status.HTTP_204_NO_CONTENT
 )
-async def delete_course(course_id: int, db=Depends(get_db)):
+async def delete_course(
+    course_id: int,
+    db=Depends(get_db)
+):
     for course in courses:
         if course["id"] == course_id:
             courses.remove(course)
-            return {"message": "Course deleted successfully"}
+            return
 
-    return {"error": "Course not found"}
+    raise HTTPException(
+        status_code=404,
+        detail=error_response(
+            "NOT_FOUND",
+            f"Course with id {course_id} does not exist"
+        )
+    )
